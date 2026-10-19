@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>TeamFlow 种子数据</title>
+  <style>
+    body { font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; padding: 24px; background: #0f172a; color: #e2e8f0; }
+    h1 { font-size: 18px; margin: 0 0 12px; }
+    pre { background: #1e293b; padding: 16px; border-radius: 8px; white-space: pre-wrap; word-break: break-all; font-size: 13px; }
+    .ok { color: #4ade80; } .bad { color: #f87171; } .warn { color: #fbbf24; }
+  </style>
+</head>
+<body>
+<h1>TeamFlow · 种子数据（可重复执行）</h1>
+<pre id="log">启动中…</pre>
+<script src="js/config.js"></script>
+<script>
+(function () {
+  'use strict';
+  var CFG = window.TEAMFLOW_CONFIG || {};
+  var BASE = (CFG.supabaseUrl || '').replace(/\/+$/, '');
+  var KEY = CFG.supabaseAnonKey || '';
+  var logEl = document.getElementById('log');
+  var lines = [];
+  function log(s, cls) {
+    lines.push(cls ? '<span class="' + cls + '">' + s + '</span>' : s);
+    logEl.innerHTML = lines.join('\n');
+  }
+  function ok(s) { log('  OK  ' + s, 'ok'); }
+  function bad(s) { log('  FAIL ' + s, 'bad'); }
+  function warn(s) { log('  WARN ' + s, 'warn'); }
+
+  /**
+   * 统一接口调用。
+   * 关键：写操作必须带 Prefer: return=representation，
+   * 否则 PostgREST 只返回 201 空 body，拿不到刚插入的行（会读到 undefined）。
+   */
+  function api(path, opts) {
+    opts = opts || {};
+    var headers = { apikey: KEY, 'Content-Type': 'application/json' };
+    if (opts.token) headers.Authorization = 'Bearer ' + opts.token;
+    if (opts.method === 'POST' || opts.method === 'PATCH') headers.Prefer = 'return=representation';
+    if (opts.prefer) headers.Prefer = opts.prefer;
+    return fetch(BASE + path, {
+      method: opts.method || 'GET',
+      headers: headers,
+      body: opts.body ? JSON.stringify(opts.body) : undefined
+    }).then(function (r) {
+      return r.text().then(function (t) {
+        var b = null;
+        try { b = t ? JSON.parse(t) : null; } catch (e) { b = t; }
+        if (!r.ok) {
+          var msg = (b && (b.message || b.msg || b.error_description || b.error)) || ('HTTP ' + r.status);
+          var err = new Error(msg + ' [' + r.status + ']');
+          err.status = r.status;
+          throw err;
+        }
+        return b;
+      });
+    });
+  }
+
+  var RESULT = { users: {}, projects: [], tasks: 0, comments: 0, rls: null };
+  window.__seedDone = null;
+
+  function login(email, password) {
+    return api('/auth/v1/token?grant_type=password', {
+      method: 'POST', body: { email: email, password: password }
+    }).catch(function (e) { warn(email + ' 登录失败：' + e.message); return null; });
+  }
+
+  async function main() {
+    try {
+      log('Supabase: ' + BASE);
+
+      /* ---------- 1. 登录 ---------- */
+      log('\n=== 1. 登录两个账号 ===');
+      var s1 = await login('juyuxiao@example.com', 'TeamFlow2026');
+      var s2 = await login('chenmo@example.com', 'TeamFlow2026');
+      if (!s1) { bad('主账号登录失败，中止'); window.__seedDone = RESULT; return; }
+      ok('juyuxiao@example.com 登录成功');
+      if (s2) ok('chenmo@example.com 登录成功'); else warn('chenmo 登录失败，按单用户演示');
+
+      var U1 = s1.user.id, T1 = s1.access_token;
+      var U2 = s2 ? s2.user.id : null;
+      RESULT.users = { primary: U1, mate: U2 };
+
+      /* ---------- 2. 昵称 ---------- */
+      log('\n=== 2. 补齐用户昵称 ===');
+      try {
+        await api('/rest/v1/profiles?id=eq.' + U1, { method: 'PATCH', token: T1, body: { display_name: '鞠雨萧' } });
+        ok('主账号昵称 = 鞠雨萧');
+      } catch (e) { warn('改主账号昵称失败：' + e.message); }
+      if (U2) {
+        try {
+          await api('/rest/v1/profiles?id=eq.' + U2, { method: 'PATCH', token: T1, body: { display_name: '陈默' } });
+          ok('成员昵称 = 陈默');
+        } catch (e) { warn('改成员昵称失败：' + e.message); }
+      }
+
+      /* ---------- 3. 项目（幂等） ---------- */
+      log('\n=== 3. 项目 ===');
+      var projDefs = [
+        { name: 'TeamFlow 平台开发', key: 'TF', description: '团队协作任务板主体功能：看板、任务、评论与统计。' },
+        { name: '电商后台重构', key: 'SHOP', description: '把旧版 jQuery 后台迁移到现代化前端，拆分订单与商品模块。' }
+      ];
+      var existing = await api('/rest/v1/projects?select=*&order=created_at.asc', { token: T1 });
+      var projects = [];
+      for (var p = 0; p < projDefs.length; p++) {
+        var def = projDefs[p];
+        var found = null;
+        for (var e2 = 0; e2 < existing.length; e2++) {
+          if (existing[e2].key === def.key) { found = existing[e2]; break; }
+        }
+        if (found) { projects.push(found); ok('复用已有项目「' + found.name + '」'); }
+        else {
+          try {
+            var created = await api('/rest/v1/projects', {
+              method: 'POST', token: T1,
+              body: { name: def.name, key: def.key, description: def.description, owner_id: U1 }
+            });
+            projects.push(created[0]);
+            ok('新建项目「' + created[0].name + '」(' + created[0].key + ')');
+          } catch (err) { bad('建项目失败「' + def.name + '」→ ' + err.message); }
+        }
+      }
+      RESULT.projects = projects.map(function (x) { return x ? x.key : null; });
+      if (!projects.length || !projects[0]) { window.__seedDone = RESULT; return; }
+
+      /* ---------- 4. 成员 ---------- */
+      if (U2) {
+        try {
+          var mem = await api('/rest/v1/project_members?select=*&project_id=eq.' + projects[0].id, { token: T1 });
+          if (mem.some(function (m) { return m.user_id === U2; })) ok('成员已在项目内');
+          else {
+            await api('/rest/v1/project_members', {
+              method: 'POST', token: T1,
+              body: { project_id: projects[0].id, user_id: U2, role: 'member' }
+            });
+            ok('成员已加入项目');
+          }
+        } catch (err) { warn('加成员失败：' + err.message); }
+      }
+
+      /* ---------- 5. 任务（幂等） ---------- */
+      log('\n=== 5. 任务 ===');
+      var today = new Date();
+      function d(off) {
+        var x = new Date(today.getTime() + off * 86400000);
+        var p2 = function (n) { return n < 10 ? '0' + n : '' + n; };
+        return x.getFullYear() + '-' + p2(x.getMonth() + 1) + '-' + p2(x.getDate());
+      }
+      var tasks = [
+        { p: 0, t: '设计数据库表结构与 RLS 策略', d: '用户、项目、任务、评论、活动日志五张核心表；所有表启用行级安全，默认拒绝，按项目成员授权。', s: 'done', pr: 'high', a: U1, due: d(-3) },
+        { p: 0, t: '实现看板拖拽改状态', d: '四个列之间拖拽卡片，乐观更新界面，失败自动回滚。', s: 'done', pr: 'high', a: U1, due: d(-1) },
+        { p: 0, t: '任务详情弹窗与评论', d: '支持编辑标题、描述、状态、优先级、负责人、截止日期，并在弹窗内直接评论。', s: 'done', pr: 'medium', a: U2, due: d(-2) },
+        { p: 0, t: '登录注册与邮箱验证', d: '接入 Supabase Auth，处理邮箱未验证、密码错误等异常分支。', s: 'review', pr: 'high', a: U1, due: d(1) },
+        { p: 0, t: '项目统计条与完成度', d: '展示总任务、进行中、已完成、高优、逾期数量，以及完成度进度条。', s: 'doing', pr: 'medium', a: U2, due: d(2) },
+        { p: 0, t: '多成员协作与实时同步', d: '轮询式准实时同步，编辑中暂停刷新避免打断输入。', s: 'doing', pr: 'urgent', a: U1, due: d(-1) },
+        { p: 0, t: '移动端适配', d: '窄屏下侧栏改为抽屉，看板横向滚动。', s: 'todo', pr: 'medium', a: null, due: d(5) },
+        { p: 0, t: '任务标签与颜色分类', d: '给任务打标签，支持按标签筛选。', s: 'todo', pr: 'low', a: null, due: d(8) },
+        { p: 0, t: '部署到 GitHub Pages 并配置域名', d: '前端静态托管，数据库用 Supabase，写部署说明。', s: 'todo', pr: 'high', a: U1, due: d(3) },
+        { p: 1, t: '梳理旧后台页面清单', d: '统计 47 个页面，按订单、商品、用户、报表分组。', s: 'done', pr: 'medium', a: U1, due: d(-6) },
+        { p: 1, t: '订单列表虚拟滚动', d: '单页 5000 条订单，用虚拟滚动把首屏渲染降到 50ms 内。', s: 'review', pr: 'urgent', a: U2, due: d(0) },
+        { p: 1, t: '商品批量编辑', d: '勾选多行后统一改价、改库存、上架下架。', s: 'doing', pr: 'high', a: U1, due: d(4) },
+        { p: 1, t: '报表导出 Excel', d: '按日期区间导出订单明细，超过 10 万行走异步任务。', s: 'todo', pr: 'medium', a: null, due: d(9) }
+      ];
+
+      var existingTasks = await api('/rest/v1/tasks?select=*&order=position.asc', { token: T1 });
+      log('  库里已有任务 ' + existingTasks.length + ' 条');
+      if (existingTasks.length >= tasks.length) {
+        ok('任务数量已够，跳过创建');
+      } else {
+        var pos = existingTasks.length, made = 0;
+        for (var k = 0; k < tasks.length; k++) {
+          var tk = tasks[k];
+          if (!projects[tk.p]) continue;
+          var dup = existingTasks.some(function (x) { return x.title === tk.t; });
+          if (dup) continue;
+          try {
+            await api('/rest/v1/tasks', {
+              method: 'POST', token: T1,
+              body: {
+                project_id: projects[tk.p].id, title: tk.t, description: tk.d,
+                status: tk.s, priority: tk.pr, position: pos++,
+                assignee_id: tk.a || null, due_date: tk.due || null, created_by: U1
+              }
+            });
+            made++;
+          } catch (err) { bad('建任务失败「' + tk.t + '」→ ' + err.message); }
+        }
+        ok('新建任务 ' + made + ' 条');
+      }
+
+      var allTasks = await api('/rest/v1/tasks?select=id,title&order=position.asc', { token: T1 });
+      RESULT.tasks = allTasks.length;
+      ok('库里任务共 ' + allTasks.length + ' 条');
+
+      /* ---------- 6. 评论 ---------- */
+      log('\n=== 6. 评论 ===');
+      // 注意：RLS 策略要求 auth.uid() = user_id，所以「陈默的评论」必须用陈默的 token 插入。
+      // 用主账号 token 代别人发评论会被数据库拒绝——这正是行级安全在起作用。
+      var existingComments = await api('/rest/v1/comments?select=*', { token: T1 });
+      var wanted = [
+        { body: 'RLS 策略已全部开启，用 anon key 直接查表返回空数组，说明生效了。', by: 'primary' },
+        { body: '拖拽在跨列时有个小概率抖动，加了 is-over 类的高亮就明显好定位了。', by: 'mate' },
+        { body: '评论框回车发送已加上，顺手禁用了输入时的空提交。', by: 'primary' }
+      ];
+      var cOk = 0;
+      for (var c = 0; c < Math.min(wanted.length, allTasks.length); c++) {
+        var w = wanted[c];
+        var already = existingComments.some(function (x) { return x.body === w.body; });
+        if (already) { cOk++; continue; }
+        var authorId = (w.by === 'mate' && U2) ? U2 : U1;
+        var authorToken = (w.by === 'mate' && s2) ? s2.access_token : T1;
+        try {
+          await api('/rest/v1/comments', {
+            method: 'POST', token: authorToken,
+            body: { task_id: allTasks[c].id, user_id: authorId, body: w.body }
+          });
+          cOk++;
+        } catch (err) { bad('评论失败 → ' + err.message); }
+      }
+      ok('评论共 ' + cOk + ' / ' + wanted.length + ' 条');
+      RESULT.comments = cOk;
+
+      /* ---------- 7. 活动日志 ---------- */
+      log('\n=== 7. 活动日志 ===');
+      var act = await api('/rest/v1/activity?select=*', { token: T1 });
+      if (act.length >= 3) ok('活动日志已有 ' + act.length + ' 条，跳过');
+      else {
+        var aOk = 0;
+        for (var g = 0; g < Math.min(6, allTasks.length); g++) {
+          try {
+            await api('/rest/v1/activity', {
+              method: 'POST', token: T1,
+              body: {
+                project_id: projects[0].id, task_id: allTasks[g].id,
+                user_id: (g % 2 === 0 || !U2) ? U1 : U2,
+                action: ['创建任务', '移动任务', '更新任务'][g % 3],
+                detail: allTasks[g].title
+              }
+            });
+            aOk++;
+          } catch (e) { }
+        }
+        ok('活动日志写入 ' + aOk + ' 条');
+      }
+
+      /* ---------- 8. RLS 验证 ---------- */
+      log('\n=== 8. 行级安全（RLS）验证 ===');
+      var anonTasks = await api('/rest/v1/tasks?select=id');
+      var anonCount = Array.isArray(anonTasks) ? anonTasks.length : -1;
+      if (anonCount === 0) { ok('匿名查询 tasks = 0 行 → 未登录看不到任何任务（RLS 生效）'); RESULT.rls = true; }
+      else { bad('匿名查询返回 ' + anonCount + ' 行 → RLS 未生效！'); RESULT.rls = false; }
+
+      var anonProj = await api('/rest/v1/projects?select=id');
+      ok('匿名查询 projects = ' + anonProj.length + ' 行');
+
+      var myTasks = await api('/rest/v1/tasks?select=id', { token: T1 });
+      ok('登录后查询 tasks = ' + myTasks.length + ' 行 → 成员可正常读取');
+
+      log('\n=== 完成 ===');
+      log('演示账号: juyuxiao@example.com / TeamFlow2026');
+      log('协作账号: chenmo@example.com / TeamFlow2026');
+      window.__seedDone = RESULT;
+
+    } catch (e) {
+      bad('未捕获异常: ' + e.message);
+      RESULT.error = e.message;
+      window.__seedDone = RESULT;
+    }
+  }
+
+  main();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TeamFlow · 团队协作任务板</title>
+  <meta name="description" content="TeamFlow 是一个轻量的团队协作任务板：项目看板、任务分配、优先级、评论与统计。" />
+  <link rel="stylesheet" href="css/style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗂️</text></svg>" />
+</head>
+<body>
+  <!-- ==================== 启动 / 未配置提示 ==================== -->
+  <div class="boot" id="boot">
+    <div class="boot__card">
+      <div class="spinner"></div>
+      <p>正在连接 TeamFlow…</p>
+    </div>
+  </div>
+
+  <!-- ==================== 配置缺失提示 ==================== -->
+  <div class="setup" id="setup" hidden>
+    <div class="setup__card">
+      <h1>还差一步：填入 Supabase 配置</h1>
+      <p>打开 <code>js/config.js</code>，把下面两个值换成你自己项目的：</p>
+      <pre><code>window.TEAMFLOW_CONFIG = {
+  supabaseUrl: 'https://xxxxx.supabase.co',
+  supabaseAnonKey: 'eyJhbGciOi...'
+};</code></pre>
+      <p class="setup__hint">位置：Supabase 控制台 → Project Settings → API</p>
+    </div>
+  </div>
+
+  <!-- ==================== 登录 / 注册 ==================== -->
+  <div class="auth" id="auth" hidden>
+    <div class="auth__panel">
+      <div class="auth__brand">
+        <div class="auth__logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+               stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="5.5" height="16" rx="1.5"/>
+            <rect x="9.25" y="4" width="5.5" height="11" rx="1.5"/>
+            <rect x="15.5" y="4" width="5.5" height="7" rx="1.5"/>
+          </svg>
+        </div>
+        <div>
+          <h1>TeamFlow</h1>
+          <p>团队协作任务板 · 项目看板 / 任务分配 / 进度统计</p>
+        </div>
+      </div>
+
+      <div class="auth__tabs" role="tablist">
+        <button class="auth__tab is-active" id="tabLogin" role="tab" type="button">登录</button>
+        <button class="auth__tab" id="tabRegister" role="tab" type="button">注册</button>
+      </div>
+
+      <form class="auth__form" id="authForm" novalidate>
+        <div class="field" id="fieldName" hidden>
+          <label for="inpName">昵称</label>
+          <input id="inpName" type="text" autocomplete="nickname" placeholder="显示在任务卡上的名字" maxlength="24" />
+        </div>
+        <div class="field">
+          <label for="inpEmail">邮箱</label>
+          <input id="inpEmail" type="email" autocomplete="email" placeholder="you@example.com" required />
+        </div>
+        <div class="field">
+          <label for="inpPassword">密码</label>
+          <input id="inpPassword" type="password" autocomplete="current-password" placeholder="至少 6 位" required minlength="6" />
+        </div>
+        <p class="auth__error" id="authError" role="alert" hidden></p>
+        <button class="btn btn--primary btn--block" id="btnAuth" type="submit">登录</button>
+      </form>
+
+      <p class="auth__foot">
+        登录后可以创建项目、分配任务、与成员实时协作。
+      </p>
+    </div>
+    <aside class="auth__aside">
+      <h2>一个看板，管完整个项目</h2>
+      <ul>
+        <li><b>四列看板</b>：待办 / 进行中 / 待评审 / 已完成，拖拽即改状态</li>
+        <li><b>任务要素</b>：负责人、优先级、截止日期、标签、描述、评论</li>
+        <li><b>协作</b>：成员共享同一项目，改动几秒内同步到所有人</li>
+        <li><b>统计</b>：各列任务数、逾期数、高优任务一目了然</li>
+      </ul>
+      <p class="auth__tech">
+        技术栈：原生前端（零依赖）· Supabase PostgreSQL · 行级安全策略 RLS
+      </p>
+    </aside>
+  </div>
+
+  <!-- ==================== 主应用 ==================== -->
+  <div class="app" id="app" hidden>
+    <!-- 侧栏 -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar__head">
+        <div class="sidebar__brand">
+          <span class="sidebar__mark" aria-hidden="true">TF</span>
+          <span>TeamFlow</span>
+        </div>
+        <button class="icon-btn" id="btnToggleSidebar" type="button" aria-label="收起侧栏" title="收起侧栏">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M4 6h16M4 12h16M4 18h16"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="sidebar__section">
+        <div class="sidebar__label">
+          <span>我的项目</span>
+          <button class="icon-btn icon-btn--sm" id="btnNewProject" type="button" aria-label="新建项目" title="新建项目">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+          </button>
+        </div>
+        <nav class="project-list" id="projectList"></nav>
+      </div>
+
+      <div class="sidebar__foot">
+        <div class="me" id="me">
+          <span class="me__avatar" id="meAvatar">?</span>
+          <span class="me__name" id="meName">—</span>
+        </div>
+        <button class="icon-btn" id="btnSignOut" type="button" aria-label="退出登录" title="退出登录">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>
+          </svg>
+        </button>
+      </div>
+    </aside>
+
+    <!-- 主区 -->
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar__left">
+          <h2 class="topbar__title" id="projectName">选择一个项目</h2>
+          <span class="topbar__key" id="projectKey" hidden></span>
+        </div>
+        <div class="topbar__right">
+          <div class="search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>
+            </svg>
+            <input id="inpSearch" type="search" placeholder="搜索任务标题或描述…" autocomplete="off" />
+          </div>
+          <select class="select" id="selAssignee" aria-label="按负责人筛选">
+            <option value="">全部负责人</option>
+          </select>
+          <select class="select" id="selPriority" aria-label="按优先级筛选">
+            <option value="">全部优先级</option>
+            <option value="urgent">紧急</option>
+            <option value="high">高</option>
+            <option value="medium">中</option>
+            <option value="low">低</option>
+          </select>
+          <button class="btn btn--primary" id="btnNewTask" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+            新建任务
+          </button>
+        </div>
+      </header>
+
+      <!-- 统计条 -->
+      <section class="stats" id="stats" aria-label="项目统计">
+        <div class="stat"><span class="stat__n" id="statTotal">0</span><span class="stat__l">总任务</span></div>
+        <div class="stat"><span class="stat__n" id="statDoing">0</span><span class="stat__l">进行中</span></div>
+        <div class="stat"><span class="stat__n" id="statDone">0</span><span class="stat__l">已完成</span></div>
+        <div class="stat"><span class="stat__n stat__n--warn" id="statUrgent">0</span><span class="stat__l">高优任务</span></div>
+        <div class="stat"><span class="stat__n stat__n--danger" id="statOverdue">0</span><span class="stat__l">已逾期</span></div>
+        <div class="stat stat--bar">
+          <div class="progress" aria-hidden="true"><i id="progressFill" style="width:0%"></i></div>
+          <span class="stat__l">完成度 <b id="statRate">0%</b></span>
+        </div>
+      </section>
+
+      <!-- 看板 -->
+      <section class="board-wrap">
+        <!-- 空状态放在 board 之外：renderBoard() 会重写 board 的 innerHTML，
+             如果把空状态放里面，切项目时它会被删掉，后续再访问就报空指针。 -->
+        <div class="board-empty" id="boardEmpty" hidden>
+          <h3>还没有项目</h3>
+          <p>点击左侧 <b>+</b> 新建一个项目，开始管理你的任务。</p>
+        </div>
+        <section class="board" id="board"></section>
+      </section>
+    </main>
+  </div>
+
+  <!-- ==================== 任务详情 / 编辑 ==================== -->
+  <div class="modal-mask" id="modalMask">
+    <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal__head">
+        <h3 id="modalTitle">新建任务</h3>
+        <button class="icon-btn" id="btnModalClose" type="button" aria-label="关闭">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+            <path d="m6 6 12 12M18 6 6 18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="modal__body">
+        <div class="field">
+          <label for="taskTitle">标题</label>
+          <input id="taskTitle" type="text" placeholder="一句话说明要做什么" maxlength="120" />
+        </div>
+        <div class="field">
+          <label for="taskDesc">描述</label>
+          <textarea id="taskDesc" rows="4" placeholder="补充背景、验收标准等"></textarea>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="taskStatus">状态</label>
+            <select id="taskStatus">
+              <option value="todo">待办</option>
+              <option value="doing">进行中</option>
+              <option value="review">待评审</option>
+              <option value="done">已完成</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="taskPriority">优先级</label>
+            <select id="taskPriority">
+              <option value="low">低</option>
+              <option value="medium" selected>中</option>
+              <option value="high">高</option>
+              <option value="urgent">紧急</option>
+            </select>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="taskAssignee">负责人</label>
+            <select id="taskAssignee"><option value="">未指派</option></select>
+          </div>
+          <div class="field">
+            <label for="taskDue">截止日期</label>
+            <input id="taskDue" type="date" />
+          </div>
+        </div>
+
+        <!-- 评论（仅编辑已有任务时显示） -->
+        <div class="comments" id="commentsWrap" hidden>
+          <div class="comments__head">
+            <span>评论</span>
+            <span class="comments__count" id="commentsCount">0</span>
+          </div>
+          <div class="comments__list" id="commentsList"></div>
+          <div class="comments__form">
+            <input id="inpComment" type="text" placeholder="写下你的想法…" maxlength="500" />
+            <button class="btn btn--sm btn--primary" id="btnComment" type="button">发送</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal__foot">
+        <button class="btn btn--danger" id="btnDeleteTask" type="button" hidden>删除</button>
+        <span class="modal__spacer"></span>
+        <button class="btn" id="btnCancel" type="button">取消</button>
+        <button class="btn btn--primary" id="btnSave" type="button">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== 新建项目 ==================== -->
+  <div class="modal-mask" id="projMask">
+    <div class="modal modal--sm" role="dialog" aria-modal="true" aria-labelledby="projTitle">
+      <div class="modal__head">
+        <h3 id="projTitle">新建项目</h3>
+        <button class="icon-btn" id="btnProjClose" type="button" aria-label="关闭">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+            <path d="m6 6 12 12M18 6 6 18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="modal__body">
+        <div class="field">
+          <label for="projName">项目名称</label>
+          <input id="projName" type="text" placeholder="例如：电商后台重构" maxlength="60" />
+        </div>
+        <div class="field">
+          <label for="projKey">短标识</label>
+          <input id="projKey" type="text" placeholder="例如：SHOP（2-6 个大写字母）" maxlength="6" />
+        </div>
+        <div class="field">
+          <label for="projDesc">描述</label>
+          <textarea id="projDesc" rows="2" placeholder="这个项目要解决什么"></textarea>
+        </div>
+      </div>
+      <div class="modal__foot">
+        <span class="modal__spacer"></span>
+        <button class="btn" id="btnProjCancel" type="button">取消</button>
+        <button class="btn btn--primary" id="btnProjSave" type="button">创建</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="js/config.js"></script>
+  <script src="js/supabase-client.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
