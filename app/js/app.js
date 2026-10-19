@@ -212,6 +212,7 @@
   function enterApp() {
     showOnly('app');
     renderMe();
+    loadMyProfile();
     loadProjects().then(function () {
       if (state.projects.length) selectProject(state.projects[0].id);
       else setEmpty(true);
@@ -221,11 +222,29 @@
 
   function renderMe() {
     var email = (state.user && state.user.email) || '';
-    var name = (state.user && state.user.user_metadata && state.user.user_metadata.display_name) || email.split('@')[0] || '我';
+    var meta = (state.user && state.user.user_metadata) || {};
+    // 优先用 profiles 表里的昵称（后台创建的账号在 auth metadata 里可能没有昵称）
+    var name = (state.profile && state.profile.display_name)
+      || meta.display_name
+      || email.split('@')[0] || '我';
     $('meName').textContent = name;
     var av = $('meAvatar');
     av.textContent = initial(name);
     av.style.background = colorOf(state.user && state.user.id || email);
+  }
+
+  /** 拉取自己的资料，用于侧栏显示真实昵称 */
+  function loadMyProfile() {
+    if (!state.user) return Promise.resolve();
+    return window.SB.select('profiles', {
+      select: 'id,display_name,avatar_color',
+      filters: [['id', 'eq', state.user.id]]
+    }).then(function (rows) {
+      if (rows && rows[0]) {
+        state.profile = rows[0];
+        renderMe();
+      }
+    }).catch(function () {});
   }
 
   /* =========================================================
